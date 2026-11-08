@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ne">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>को मा को छ</title>
+<style>
+  body { font-family: sans-serif; background:#f6efe0; color:#3a2f1f; text-align:center; padding:40px 16px; }
+  h1 { font-size: 2.2rem; }
+  #status { margin-top:24px; font-size:1.1rem; }
+</style>
+</head>
+<body>
+  <h1>को मा को छ</h1>
+  <p>Test page</p>
+  <div id="status">Connecting to Firebase...</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import { getDatabase } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAkviCXXZdszqQFSeL_e_u2nmIsz9d8IWA",
+  authDomain: "ko-maa-ko-chha.firebaseapp.com",
+  databaseURL: "https://ko-maa-ko-chha-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "ko-maa-ko-chha",
+  storageBucket: "ko-maa-ko-chha.firebasestorage.app",
+  messagingSenderId: "168994220920",
+  appId: "1:168994220920:web:65f4d1f9bd82253c50368d"
+};
+
+const status = document.getElementById("status");
+try {
+  const app = initializeApp(firebaseConfig);
+  getDatabase(app);
+  const cred = await signInAnonymously(getAuth(app));
+  status.textContent = "✅ Connected! Your player ID starts with: " + cred.user.uid.slice(0, 6);
+} catch (e) {
+  status.textContent = "❌ Problem: " + e.message;
+}
+</script>
+</body>
+</html>

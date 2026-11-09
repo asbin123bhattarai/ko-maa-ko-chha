@@ -290,7 +290,7 @@ $("host").onclick = async () => {
   for (let i = 0; i < 5; i++) {
     const code = makeCode();
     try {
-      await set(ref(db, `rooms/${code}/meta`), { host: uid, status: "lobby", claimDelay: 20, createdAt: serverTimestamp() });
+      await set(ref(db, `rooms/${code}/meta`), { host: uid, status: "lobby", claimDelay: 30, createdAt: serverTimestamp() });
     } catch (e) { continue; }
     try { await joinRoom(code); } catch (e) { $("homeErr").textContent = "रुममा जान सकिएन।"; }
     return;
@@ -309,7 +309,7 @@ $("join").onclick = async () => {
 let unsub = null, curCode = null;
 let viewKey = null, lastRoom = null, gameErr = "", draftWord = "", busy = false;
 function enterLobby(code) {
-  curCode = code; viewKey = null; gameErr = ""; draftWord = ""; lastRoom = null;
+  curCode = code; viewKey = null; gameErr = ""; draftWord = ""; lastRoom = null; resetReveal();
   try { localStorage.setItem(RK, code); } catch (e) {}
   $("roomCode").textContent = code; $("lobbyMsg").textContent = "";
   show("loading");
@@ -319,7 +319,7 @@ function enterLobby(code) {
       const v = s.val();
       if (!v || !v.players || !v.players[uid]) { goHome(); return; }
       lastRoom = v;
-      if ((v.meta || {}).status === "lobby") { viewKey = null; show("vLobby"); renderLobby(v); }
+      if ((v.meta || {}).status === "lobby") { viewKey = null; resetReveal(); show("vLobby"); renderLobby(v); }
       else renderGame(v);
     },
     () => goHome());
@@ -348,12 +348,12 @@ function renderLobby(room) {
   });
   const di = $("delayIn");
   di.disabled = !isHost;
-  if (document.activeElement !== di) di.value = meta.claimDelay || 20;
+  if (document.activeElement !== di) di.value = meta.claimDelay || 30;
   $("start").disabled = !(isHost && n >= 3);
   $("lobbyMsg").textContent = n < 3 ? "कम्तीमा ३ खेलाडी चाहिन्छ।" : (isHost ? "" : "होस्टले खेल सुरु गर्नेछन्।");
 }
 $("delayIn").onchange = () => {
-  let v = Math.round(Number($("delayIn").value)) || 20;
+  let v = Math.round(Number($("delayIn").value)) || 30;
   v = Math.min(120, Math.max(5, v)); $("delayIn").value = v;
   update(ref(db, `rooms/${curCode}/meta`), { claimDelay: v }).catch(() => {});
 };
@@ -404,7 +404,7 @@ function renderGame(room) {
   const S = gameState(room);
   show("vGame");
   if (!S.members.includes(uid)) { viewKey = null; $("gHead").textContent = ""; $("gBody").textContent = "खेल सुरु भइसकेको छ।"; return; }
-  if (S.round >= 4) { renderFinished(room); return; }
+  if (S.round >= 4) { renderReveal(room, S); return; }
   const r = S.round;
   $("gHead").textContent = `राउन्ड ${r + 1} / 4`;
   if (S.has(r, uid)) renderWaiting(room, S, r); else renderWriting(room, S, r);
@@ -462,31 +462,107 @@ function renderWaiting(room, S, r) {
   $("gBody").innerHTML = `<p>✅ तपाईंले पास गर्नुभयो</p><p>${sent}</p><div class="avrow">${items}</div><p>${done} / ${S.members.length} जनाले पास गरे</p>`;
 }
 
-function renderFinished(room) {
-  $("gHead").textContent = "सबै कागज पूरा भए 🎉";
-  if (viewKey === "done") return;
-  viewKey = "done";
-  const isHost = (room.meta || {}).host === uid;
-  $("gBody").innerHTML = `<p>सबैले आ-आफ्नो शब्द लेखिसके।</p><div class="small">जाँचका लागि: तपाईंको कागज (अर्को चरणमा यो एक-एक गरी सबैलाई खोलिनेछ)</div><div id="mine" class="sentence">...</div>
-    ${isHost ? '<button class="btn primary" id="again">नयाँ राउन्ड खेल्नुहोस्</button>' : '<p class="small">होस्टले नयाँ राउन्ड सुरु गर्नेछन्</p>'}
-    <button class="btn ghost" id="exit">खेल छोड्नुहोस्</button>
-    <div id="endErr" class="err"></div>`;
-  $("exit").onclick = leaveRoom;
-  if (isHost) $("again").onclick = async () => {
-    $("again").disabled = true; $("endErr").textContent = "";
-    try {
-      await update(ref(db), { [`rooms/${curCode}/plan`]: null, [`rooms/${curCode}/passed`]: null, [`words/${curCode}`]: null, [`rooms/${curCode}/meta/status`]: "lobby" });
-    } catch (e) { $("endErr").textContent = "सुरु गर्न सकिएन। (नयाँ Firebase rules पेस्ट गर्नुभयो?)"; $("again").disabled = false; }
-  };
-  loadMine(room);
-}
-async function loadMine(room) {
-  const me = (room.players || {})[uid], box = $("mine");
+/* ---------- Reveal ---------- */
+let sentCache = {}, sentBusy = {}, sentTry = {}, sentFail = {}, offset = 0, pickOpen = false, rv = { active: null, startAt: 0, delayMs: 0 };
+function resetReveal() { sentCache = {}; sentBusy = {}; sentTry = {}; sentFail = {}; pickOpen = false; rv = { active: null, startAt: 0, delayMs: 0 }; }
+onValue(ref(db, ".info/serverTimeOffset"), s => { offset = Number(s.val()) || 0; });
+const nowMs = () => Date.now() + offset;
+
+async function ensureSentence(p) {
+  if (sentCache[p] || sentBusy[p] || sentFail[p]) return;
+  sentBusy[p] = true;
   try {
-    const v = norm((await get(ref(db, `words/${curCode}/${me.seat}`))).val());
-    box.innerHTML = [0, 1, 2, 3].map(b => `<b>${esc(v[b] === undefined ? "?" : v[b])}</b> ${LBL[b]}`).join(" ");
-  } catch (e) { box.textContent = "कागज पढ्न सकिएन।"; }
+    const v = norm((await get(ref(db, `words/${curCode}/${p}`))).val());
+    sentCache[p] = [0, 1, 2, 3].map(b => (v[b] === undefined ? "?" : v[b]));
+    sentBusy[p] = false;
+    if (lastRoom) renderGame(lastRoom);
+  } catch (e) {
+    sentBusy[p] = false;
+    sentTry[p] = (sentTry[p] || 0) + 1;
+    if (sentTry[p] < 4) setTimeout(() => ensureSentence(p), 1200);
+    else { sentFail[p] = true; if (lastRoom) renderGame(lastRoom); }
+  }
 }
+
+function revealState(room, S) {
+  const R = room.reveal || {};
+  const opened = norm(R.opened), all = norm(R.all), shareTo = norm(R.shareTo);
+  const q = S.papers.filter(p => opened[p] !== undefined && all[p] === undefined).sort((x, y) => (opened[x] - opened[y]) || (x - y));
+  const active = q.length ? q[0] : null;
+  const lastDone = Math.max(0, ...Object.values(all).map(Number));
+  const delayMs = ((room.meta || {}).claimDelay || 30) * 1000;
+  const startAt = active === null ? 0 : Math.max(Number(opened[active]), lastDone);
+  return { opened, all, shareTo, active, startAt, delayMs, allDone: S.papers.every(p => all[p] !== undefined) };
+}
+
+function renderReveal(room, S) {
+  viewKey = "reveal";
+  show("vGame");
+  const V = revealState(room, S), pm = room.players || {}, isHost = (room.meta || {}).host === uid;
+  const myP = S.papers.find(p => S.planOf(p, 0) === uid), a = V.active;
+  const who = p => pm[S.planOf(p, 0)] || { name: "?", avatar: 0 };
+  const nm = u => (pm[u] || { name: "?" }).name;
+  const canSee = p => V.all[p] !== undefined || (V.opened[p] !== undefined && (p === myP || V.shareTo[p] === uid));
+  S.papers.forEach(p => { if (canSee(p)) ensureSentence(p); });
+  const sent = p => sentCache[p] ? sentCache[p].map((w, b) => `<b>${esc(w)}</b> ${LBL[b]}`).join(" ") : (sentFail[p] ? "पढ्न सकिएन।" : "...");
+  const st = p => V.all[p] !== undefined ? "✅" : p === a ? "📖" : V.opened[p] !== undefined ? "⏳" : "🔒";
+  $("gHead").textContent = V.allDone ? "सबै कागज खुले 🎉" : "कागज खोल्ने बेला 📖";
+
+  const board = `<div class="avrow">${S.papers.map(p => { const o = who(p); return `<div class="avitem"><div class="mini2">${picHTML(o)}</div><div>${st(p)}</div><div>${esc(o.name)}</div></div>`; }).join("")}</div>`;
+
+  let mine = "";
+  if (!V.allDone && myP !== undefined && V.all[myP] === undefined) {
+    if (V.opened[myP] === undefined) mine = `<button class="btn primary" id="openBtn">कागज खोल्नुहोस्</button>`;
+    else if (a === myP) {
+      const others = S.members.filter(u => u !== uid);
+      const picker = `<p class="prompt">कसलाई देखाउने?</p><div class="avrow">${others.map(u => `<button class="btn ghost pick" data-u="${esc(u)}" style="width:auto;margin:0;padding:8px 12px"><div class="mini2">${picHTML(pm[u])}</div>${esc(nm(u))}</button>`).join("")}</div>`;
+      mine = `<div class="small">यो तपाईंलाई मात्र देखिन्छ। पहिला आफैँ हाँस्नुहोस् 😄</div><div id="mySent" class="sentence">${sent(myP)}</div>
+        <div class="small" style="margin-top:8px">बाँकी समय: <b id="cd"></b> (त्यसपछि अरूले क्लेम गर्न सक्छन्)</div>
+        <button class="btn primary" id="shareAll">सबैलाई देखाउनुहोस्</button>` +
+        (V.shareTo[myP] ? `<p>🤫 ${esc(nm(V.shareTo[myP]))} लाई देखाइयो</p>` : (pickOpen ? picker : `<button class="btn ghost" id="shareOne">एक जनालाई देखाउनुहोस्</button>`));
+    } else mine = `<p>⏳ तपाईंको पालो आउँदैछ... अघिल्लो कागज सकिएपछि सुरु हुन्छ</p>`;
+  }
+
+  let other = "";
+  if (!V.allDone && a === null) other = `<p class="small">अहिले कुनै कागज खुलेको छैन। आ-आफ्नो कागज खोल्नुहोस्।</p>`;
+  if (!V.allDone && a !== null && a !== myP) {
+    const ow = who(a);
+    other = `<p>📖 <b>${esc(ow.name)}</b> ले आफ्नो कागज पढ्दैछन्...</p>`;
+    if (V.shareTo[a] === uid) other += `<div class="small">🤫 ${esc(ow.name)} ले तपाईंलाई मात्र देखाए</div><div id="privSent" class="sentence">${sent(a)}</div>`;
+    else if (V.shareTo[a]) other += `<p class="small">🤫 ${esc(ow.name)} ले ${esc(nm(V.shareTo[a]))} लाई मात्र देखाए</p>`;
+    other += `<div class="small"><b id="cd"></b> पछि क्लेम गर्न सकिन्छ</div><div id="claimBox" class="hidden"><button class="btn ghost" id="claim">क्लेम गर्नुहोस् (सबैलाई खोल्नुहोस्)</button></div>`;
+  }
+
+  const doneList = S.papers.filter(p => V.all[p] !== undefined).sort((x, y) => V.all[x] - V.all[y])
+    .map(p => `<div class="small" style="margin-top:12px">${esc(who(p).name)} को कागज</div><div class="sentence" data-p="${p}">${sent(p)}</div>`).join("");
+  const endBtns = V.allDone ? `${isHost ? '<button class="btn primary" id="again">नयाँ राउन्ड खेल्नुहोस्</button>' : '<p class="small">होस्टले नयाँ राउन्ड सुरु गर्नेछन्</p>'}<button class="btn ghost" id="exit">खेल छोड्नुहोस्</button>` : "";
+
+  $("gBody").innerHTML = board + mine + other + (doneList ? `<div id="sharedList">${doneList}</div>` : "") + endBtns + `<div id="rvErr" class="err"></div>`;
+
+  const act = async fn => { $("rvErr").textContent = ""; try { await fn(); } catch (e) { $("rvErr").textContent = "गर्न सकिएन। (नयाँ Firebase rules पेस्ट गर्नुभयो?)"; } };
+  const rp = k => ref(db, `rooms/${curCode}/reveal/${k}`);
+  if ($("openBtn")) $("openBtn").onclick = () => act(() => set(rp(`opened/${myP}`), serverTimestamp()));
+  if ($("shareAll")) $("shareAll").onclick = () => act(() => set(rp(`all/${myP}`), serverTimestamp()));
+  if ($("shareOne")) $("shareOne").onclick = () => { pickOpen = true; renderGame(lastRoom); };
+  document.querySelectorAll(".pick").forEach(b => { b.onclick = () => act(async () => { await set(rp(`shareTo/${myP}`), b.dataset.u); pickOpen = false; }); });
+  if ($("claim")) $("claim").onclick = () => act(() => set(rp(`all/${a}`), serverTimestamp()));
+  if ($("exit")) $("exit").onclick = leaveRoom;
+  if ($("again")) $("again").onclick = async () => {
+    $("again").disabled = true; $("rvErr").textContent = "";
+    try { await update(ref(db), { [`rooms/${curCode}/plan`]: null, [`rooms/${curCode}/passed`]: null, [`rooms/${curCode}/reveal`]: null, [`words/${curCode}`]: null, [`rooms/${curCode}/meta/status`]: "lobby" }); }
+    catch (e) { $("rvErr").textContent = "सुरु गर्न सकिएन। (नयाँ Firebase rules पेस्ट गर्नुभयो?)"; $("again").disabled = false; }
+  };
+  rv = { active: a, startAt: V.startAt, delayMs: V.delayMs };
+  tick();
+}
+
+function tick() {
+  if (rv.active === null || rv.active === undefined) return;
+  const rem = Math.ceil((rv.startAt + rv.delayMs - nowMs()) / 1000);
+  const cd = $("cd"); if (cd) cd.textContent = rem > 0 ? rem + " सेकेन्ड" : "०";
+  const cb = $("claimBox"); if (cb) cb.classList.toggle("hidden", rem > 0);
+}
+setInterval(tick, 500);
 
 /* ---------- Start ---------- */
 (async () => {

@@ -372,7 +372,8 @@ $("start").onclick = async () => {
   try { await update(ref(db), { [`rooms/${curCode}/plan`]: plan, [`rooms/${curCode}/meta/status`]: "writing" }); }
   catch (e) { $("lobbyMsg").textContent = "सुरु गर्न सकिएन। (Firebase rules पेस्ट गर्नुभयो?)"; $("start").disabled = false; }
 };
-$("leave").onclick = async () => {
+$("leave").onclick = leaveRoom;
+async function leaveRoom() {
   const code = curCode;
   try {
     const s = await get(ref(db, `rooms/${code}/players/${uid}`));
@@ -381,7 +382,7 @@ $("leave").onclick = async () => {
     if (seat !== null) await remove(ref(db, `rooms/${code}/seats/${seat}`));
   } catch (e) {}
   goHome();
-};
+}
 
 /* ---------- Game ---------- */
 const LBL = ["को", "मा", "को", "छ"];
@@ -464,7 +465,18 @@ function renderFinished(room) {
   $("gHead").textContent = "सबै कागज पूरा भए 🎉";
   if (viewKey === "done") return;
   viewKey = "done";
-  $("gBody").innerHTML = `<p>सबैले आ-आफ्नो शब्द लेखिसके।</p><div class="small">जाँचका लागि: तपाईंको कागज (अर्को चरणमा यो एक-एक गरी सबैलाई खोलिनेछ)</div><div id="mine" class="sentence">...</div>`;
+  const isHost = (room.meta || {}).host === uid;
+  $("gBody").innerHTML = `<p>सबैले आ-आफ्नो शब्द लेखिसके।</p><div class="small">जाँचका लागि: तपाईंको कागज (अर्को चरणमा यो एक-एक गरी सबैलाई खोलिनेछ)</div><div id="mine" class="sentence">...</div>
+    ${isHost ? '<button class="btn primary" id="again">नयाँ राउन्ड खेल्नुहोस्</button>' : '<p class="small">होस्टले नयाँ राउन्ड सुरु गर्नेछन्</p>'}
+    <button class="btn ghost" id="exit">खेल छोड्नुहोस्</button>
+    <div id="endErr" class="err"></div>`;
+  $("exit").onclick = leaveRoom;
+  if (isHost) $("again").onclick = async () => {
+    $("again").disabled = true; $("endErr").textContent = "";
+    try {
+      await update(ref(db), { [`rooms/${curCode}/plan`]: null, [`rooms/${curCode}/passed`]: null, [`words/${curCode}`]: null, [`rooms/${curCode}/meta/status`]: "lobby" });
+    } catch (e) { $("endErr").textContent = "सुरु गर्न सकिएन। (नयाँ Firebase rules पेस्ट गर्नुभयो?)"; $("again").disabled = false; }
+  };
   loadMine(room);
 }
 async function loadMine(room) {

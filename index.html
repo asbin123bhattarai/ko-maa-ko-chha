@@ -429,6 +429,7 @@ function renderWriting(room, S, r) {
     <div class="prompt">${PROMPT[r]}</div>
     <button class="btn primary" id="pass">पास गर्नुहोस्</button>
     <div id="gErr" class="err">${esc(gameErr)}</div>`;
+  draftWord = "";
   $("pass").onclick = () => submitWord(r, p);
   $("wordIn").onkeydown = e => { if (e.key === "Enter" && !e.isComposing) submitWord(r, p); };
   setTimeout(() => { const i = $("wordIn"); if (i) i.focus(); }, 50);
@@ -438,12 +439,12 @@ async function submitWord(r, p) {
   if (busy) return;
   const w = $("wordIn").value.trim();
   if (!w) { $("gErr").textContent = "कृपया शब्द लेख्नुहोस्।"; return; }
-  busy = true; gameErr = ""; draftWord = w; $("pass").disabled = true; $("gErr").textContent = "";
+  busy = true; gameErr = ""; $("pass").disabled = true; $("gErr").textContent = "";
   try {
     try { await set(ref(db, `words/${curCode}/${p}/${r}`), w); } catch (e) { /* पहिले नै लेखिएको हुन सक्छ */ }
     await set(ref(db, `rooms/${curCode}/passed/${r}/${uid}`), String(p));
-    draftWord = "";
   } catch (e) {
+    draftWord = w;
     gameErr = "पास गर्न सकिएन। (Firebase rules पेस्ट गर्नुभयो?)";
     viewKey = null; if (lastRoom) renderGame(lastRoom);
   }

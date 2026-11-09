@@ -9,7 +9,7 @@
   :root { --paper:#f6efe0; --ink:#3a2f1f; --accent:#c0562b; --line:#d9c9a8; }
   * { box-sizing: border-box; }
   body { margin:0; font-family:"Noto Sans Devanagari", system-ui, sans-serif; background:var(--paper); color:var(--ink); }
-  .wrap { max-width:440px; margin:0 auto; padding:24px 16px 48px; }
+  .wrap { max-width:440px; margin:0 auto; padding:24px 16px 190px; }
   h1 { text-align:center; font-size:2.2rem; margin:8px 0 4px; }
   .sub { text-align:center; opacity:.7; margin-bottom:20px; }
   .card { background:#fffaf0; border:1px solid var(--line); border-radius:16px; padding:18px; box-shadow:0 2px 8px #0001; }
@@ -62,6 +62,24 @@
   .avitem { text-align:center; width:70px; font-size:.78rem; word-break:break-word; }
   .sentence { background:#fffdf3; border:1px solid var(--line); border-radius:10px; padding:14px; font-size:1.25rem; line-height:1.9; margin-top:8px; }
   .sentence b { color:var(--accent); }
+  #dock { position:fixed; left:0; right:0; bottom:0; z-index:20; max-width:440px; margin:0 auto; background:#fffaf0; border:1px solid var(--line); border-bottom:none; border-radius:16px 16px 0 0; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); box-shadow:0 -4px 14px #0002; }
+  #callRow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:center; }
+  .ib { border:2px solid var(--accent); background:#fff; color:var(--accent); border-radius:12px; min-width:44px; height:44px; font-size:1.2rem; cursor:pointer; font-family:inherit; font-weight:600; padding:0 10px; }
+  .ib.on { background:var(--accent); color:#fff; }
+  .ib.join { flex:1; font-size:1rem; }
+  .cv { position:relative; width:42px; height:42px; border-radius:50%; border:3px solid transparent; flex:none; }
+  .cv.talk { border-color:#2f9e44; box-shadow:0 0 0 3px #2f9e4440; }
+  .cv svg, .cv img { width:100%; height:100%; border-radius:50%; display:block; object-fit:cover; }
+  .cv .mk { position:absolute; right:-8px; bottom:-8px; font-size:.8rem; }
+  #reactPanel { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:8px; }
+  .rx { border:1px solid var(--line); background:#fff; border-radius:10px; padding:4px 2px; font-family:inherit; cursor:pointer; font-size:1.5rem; line-height:1.1; color:var(--ink); }
+  .rx span { display:block; font-size:.62rem; opacity:.7; }
+  #vMsg { min-height:1em; margin-bottom:4px; font-size:.8rem; text-align:center; opacity:.8; }
+  #floatLayer { position:fixed; inset:0; pointer-events:none; overflow:hidden; z-index:30; }
+  .fl { position:absolute; bottom:120px; text-align:center; animation:rise 2.4s ease-out forwards; }
+  .fl .e { font-size:3rem; }
+  .fl .n { font-size:.75rem; background:#0007; color:#fff; border-radius:8px; padding:1px 6px; }
+  @keyframes rise { 0% { transform:translateY(0) scale(.6); opacity:0; } 15% { opacity:1; transform:translateY(-30px) scale(1.1); } 100% { transform:translateY(-280px) scale(1); opacity:0; } }
 </style>
 </head>
 <body>
@@ -125,10 +143,18 @@
   </div>
 </div>
 
+<div id="floatLayer"></div>
+<div id="audioBox" style="position:absolute;width:0;height:0;overflow:hidden"></div>
+<div id="dock" class="hidden">
+  <div id="reactPanel" class="hidden"></div>
+  <div id="vMsg"></div>
+  <div id="callRow"></div>
+</div>
+
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { initializeAuth, signInAnonymously, browserSessionPersistence, indexedDBLocalPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { getDatabase, ref, set, get, update, remove, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+import { getDatabase, ref, set, get, update, remove, onValue, serverTimestamp, push, onDisconnect, onChildAdded, query, limitToLast } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyAkviCXXZdszqQFSeL_e_u2nmIsz9d8IWA",
@@ -194,6 +220,7 @@ const sortedPlayers = room => Object.entries(room.players || {}).map(([id, p]) =
 function show(id) {
   ["vProfile", "vHome", "vLobby", "vGame", "loading"].forEach(v => $(v).classList.add("hidden"));
   if (id) $(id).classList.remove("hidden");
+  const d = $("dock"); if (d) d.classList.toggle("hidden", !(id === "vLobby" || id === "vGame"));
 }
 
 /* ---------- Firebase ---------- */
@@ -313,6 +340,7 @@ function enterLobby(code) {
   try { localStorage.setItem(RK, code); } catch (e) {}
   $("roomCode").textContent = code; $("lobbyMsg").textContent = "";
   show("loading");
+  startReactListener(code);
   if (unsub) unsub();
   unsub = onValue(ref(db, "rooms/" + code),
     s => {
@@ -321,10 +349,12 @@ function enterLobby(code) {
       lastRoom = v;
       if ((v.meta || {}).status === "lobby") { viewKey = null; resetReveal(); show("vLobby"); renderLobby(v); }
       else renderGame(v);
+      renderDock();
     },
     () => goHome());
 }
 function goHome() {
+  leaveCall(); if (unsubR) { unsubR(); unsubR = null; }
   if (unsub) unsub(); unsub = null; curCode = null; lastRoom = null; viewKey = null;
   try { localStorage.removeItem(RK); } catch (e) {}
   renderHome();
@@ -549,7 +579,7 @@ function renderReveal(room, S) {
   if ($("exit")) $("exit").onclick = leaveRoom;
   if ($("again")) $("again").onclick = async () => {
     $("again").disabled = true; $("rvErr").textContent = "";
-    try { await update(ref(db), { [`rooms/${curCode}/plan`]: null, [`rooms/${curCode}/passed`]: null, [`rooms/${curCode}/reveal`]: null, [`words/${curCode}`]: null, [`rooms/${curCode}/meta/status`]: "lobby" }); }
+    try { await update(ref(db), { [`rooms/${curCode}/plan`]: null, [`rooms/${curCode}/passed`]: null, [`rooms/${curCode}/reveal`]: null, [`rooms/${curCode}/react`]: null, [`words/${curCode}`]: null, [`rooms/${curCode}/meta/status`]: "lobby" }); }
     catch (e) { $("rvErr").textContent = "सुरु गर्न सकिएन। (नयाँ Firebase rules पेस्ट गर्नुभयो?)"; $("again").disabled = false; }
   };
   rv = { active: a, startAt: V.startAt, delayMs: V.delayMs };
@@ -563,6 +593,301 @@ function tick() {
   const cb = $("claimBox"); if (cb) cb.classList.toggle("hidden", rem > 0);
 }
 setInterval(tick, 500);
+
+/* ---------- Voice call + reactions ---------- */
+const TURN = { app: "", key: "" };   // रिले चाहिएमा: Metered को app नाम र API key यहाँ राख्ने
+const vc = { on: false, joining: false, stream: null, ctx: null, sid: "", code: null, pcs: {}, members: {}, meters: {}, seen: new Set(), muted: false, unsubM: null, unsubS: null, ice: null };
+window.__vc = vc;
+let unsubR = null, soundOn = true, sfx = null, lastRx = 0, sigQueue = Promise.resolve();
+try { soundOn = localStorage.getItem("kmk_sound" + SUF) !== "0"; } catch (e) {}
+
+async function loadIce() {
+  const base = [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }];
+  if (TURN.app && TURN.key) {
+    try {
+      const r = await fetch(`https://${TURN.app}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(TURN.key)}`);
+      const j = await r.json();
+      if (Array.isArray(j)) return { iceServers: base.concat(j) };
+    } catch (e) {}
+  }
+  return { iceServers: base };
+}
+const vMsg = t => { $("vMsg").textContent = t || ""; };
+
+async function joinCall() {
+  if (vc.on || vc.joining || !curCode) return;
+  vc.joining = true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { vMsg("यो ब्राउजरमा माइक चल्दैन।"); vc.joining = false; return; }
+  try {
+    vc.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+  } catch (e) { vMsg("माइक चल्न सकेन — ब्राउजरमा माइकको अनुमति दिनुहोस्।"); vc.joining = false; return; }
+  vMsg("");
+  const AC = window.AudioContext || window.webkitAudioContext;
+  vc.ctx = new AC(); vc.ctx.resume().catch(() => {});
+  vc.sid = Math.random().toString(36).slice(2, 10);
+  vc.code = curCode; vc.muted = false; vc.seen = new Set(); vc.meters = {}; vc.members = {};
+  vc.ice = await loadIce();
+  const code = vc.code;
+  try { await remove(ref(db, `voice/${code}/sig/${uid}`)); } catch (e) {}
+  const mref = ref(db, `voice/${code}/members/${uid}`);
+  try { onDisconnect(mref).remove(); } catch (e) {}
+  vc.on = true; vc.joining = false;
+  addMeter(uid, vc.stream);
+  try { await set(mref, { sid: vc.sid, muted: false }); }
+  catch (e) { vMsg("कलमा जोड्न सकिएन। (नयाँ Firebase rules पेस्ट गर्नुभयो?)"); await leaveCall(); return; }
+  vc.unsubM = onValue(ref(db, `voice/${code}/members`), s => onMembers(norm(s.val())));
+  vc.unsubS = onValue(ref(db, `voice/${code}/sig/${uid}`), s => onSignals(s.val()));
+  renderDock();
+}
+
+async function leaveCall() {
+  if (!vc.on) return;
+  vc.on = false;
+  const code = vc.code;
+  Object.keys(vc.pcs).forEach(closePeer);
+  if (vc.stream) vc.stream.getTracks().forEach(t => t.stop());
+  vc.stream = null; vc.meters = {}; vc.members = {}; vc.seen = new Set();
+  if (vc.unsubM) vc.unsubM(); if (vc.unsubS) vc.unsubS();
+  vc.unsubM = vc.unsubS = null;
+  try { if (vc.ctx) vc.ctx.close(); } catch (e) {}
+  vc.ctx = null;
+  try { await remove(ref(db, `voice/${code}/members/${uid}`)); } catch (e) {}
+  renderDock();
+}
+
+function setMuted(m) {
+  vc.muted = m;
+  if (vc.stream) vc.stream.getAudioTracks().forEach(t => { t.enabled = !m; });
+  update(ref(db, `voice/${vc.code}/members/${uid}`), { muted: m }).catch(() => {});
+  renderDock();
+}
+
+function addMeter(u, stream) {
+  try {
+    const src = vc.ctx.createMediaStreamSource(stream), an = vc.ctx.createAnalyser();
+    an.fftSize = 512; src.connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    vc.meters[u] = { level() { an.getByteTimeDomainData(buf); let t = 0; for (let i = 0; i < buf.length; i++) { const x = (buf[i] - 128) / 128; t += x * x; } return Math.sqrt(t / buf.length); } };
+  } catch (e) {}
+}
+
+function createPeer(u, sid) {
+  const pc = new RTCPeerConnection(vc.ice);
+  const peer = { pc, sid, pending: [], remoteSet: false, tries: 0, audio: null };
+  vc.stream.getTracks().forEach(t => pc.addTrack(t, vc.stream));
+  pc.onicecandidate = e => { if (e.candidate) sendSig(u, peer, "ice", JSON.stringify(e.candidate)); };
+  pc.ontrack = e => attachRemote(u, peer, e.streams[0] || new MediaStream([e.track]));
+  pc.onconnectionstatechange = () => {
+    renderDock();
+    if (pc.connectionState === "failed" && uid < u && peer.tries < 3) {
+      setTimeout(() => { if (vc.on && vc.pcs[u] === peer) { peer.tries++; makeOffer(u, true); } }, 1500);
+    }
+  };
+  vc.pcs[u] = peer;
+  return peer;
+}
+function closePeer(u) {
+  const p = vc.pcs[u]; if (!p) return;
+  try { p.pc.close(); } catch (e) {}
+  if (p.audio) p.audio.remove();
+  delete vc.meters[u]; delete vc.pcs[u];
+}
+function attachRemote(u, peer, stream) {
+  if (peer.audio) peer.audio.remove();
+  const a = document.createElement("audio");
+  a.autoplay = true; a.playsInline = true; a.srcObject = stream;
+  $("audioBox").appendChild(a); peer.audio = a;
+  a.play().catch(() => {
+    vMsg("आवाज सुन्न स्क्रिनमा एक पटक थिच्नुहोस्।");
+    document.addEventListener("pointerdown", () => { document.querySelectorAll("#audioBox audio").forEach(x => x.play().catch(() => {})); vMsg(""); }, { once: true });
+  });
+  addMeter(u, stream);
+}
+function sendSig(u, peer, t, d) {
+  set(push(ref(db, `voice/${vc.code}/sig/${u}/${uid}`)), { sid: vc.sid, tsid: peer.sid, t, d }).catch(() => {});
+}
+async function makeOffer(u, restart) {
+  const peer = vc.pcs[u]; if (!peer) return;
+  try {
+    const offer = await peer.pc.createOffer({ iceRestart: !!restart });
+    await peer.pc.setLocalDescription(offer);
+    sendSig(u, peer, "offer", JSON.stringify(peer.pc.localDescription));
+  } catch (e) {}
+}
+async function flushIce(peer) {
+  peer.remoteSet = true;
+  for (const c of peer.pending.splice(0)) { try { await peer.pc.addIceCandidate(c); } catch (e) {} }
+}
+
+function onMembers(members) {
+  if (!vc.on) return;
+  vc.members = members;
+  for (const [u, m] of Object.entries(members)) {
+    if (u === uid || !m || !m.sid) continue;
+    const cur = vc.pcs[u];
+    if (cur && cur.sid !== m.sid) closePeer(u);
+    if (!vc.pcs[u]) { createPeer(u, m.sid); if (uid < u) makeOffer(u, false); }
+  }
+  Object.keys(vc.pcs).forEach(u => { if (!members[u]) closePeer(u); });
+  renderDock();
+}
+
+function onSignals(val) {
+  if (!vc.on) return;
+  const msgs = [];
+  Object.entries(norm(val)).forEach(([from, byId]) => Object.entries(norm(byId)).forEach(([id, m]) => {
+    if (!vc.seen.has(id)) { vc.seen.add(id); msgs.push({ from, id, m }); }
+  }));
+  msgs.sort((a, b) => (a.id < b.id ? -1 : 1));
+  msgs.forEach(x => { sigQueue = sigQueue.then(() => handleSig(x)).catch(() => {}); });
+}
+async function handleSig({ from, id, m }) {
+  remove(ref(db, `voice/${vc.code}/sig/${uid}/${from}/${id}`)).catch(() => {});
+  if (!vc.on || !m || m.tsid !== vc.sid) return;
+  let peer = vc.pcs[from];
+  if (m.t === "offer") {
+    if (!peer || peer.sid !== m.sid) { if (peer) closePeer(from); peer = createPeer(from, m.sid); }
+    await peer.pc.setRemoteDescription(JSON.parse(m.d));
+    await flushIce(peer);
+    const ans = await peer.pc.createAnswer();
+    await peer.pc.setLocalDescription(ans);
+    sendSig(from, peer, "answer", JSON.stringify(peer.pc.localDescription));
+  } else if (!peer || peer.sid !== m.sid) {
+    return;
+  } else if (m.t === "answer") {
+    await peer.pc.setRemoteDescription(JSON.parse(m.d));
+    await flushIce(peer);
+  } else if (m.t === "ice") {
+    const c = JSON.parse(m.d);
+    if (peer.remoteSet) { try { await peer.pc.addIceCandidate(c); } catch (e) {} } else peer.pending.push(c);
+  }
+}
+
+/* ----- dock (call bar) ----- */
+function renderDock() {
+  const row = $("callRow"); if (!row) return;
+  let h = "";
+  if (!vc.on) h += '<button class="ib join" id="joinCall">🎤 कलमा जोडिनुहोस्</button>';
+  else {
+    const list = (lastRoom ? sortedPlayers(lastRoom) : []).filter(p => vc.members[p.id]);
+    h += list.map(p => {
+      const m = vc.members[p.id], pr = vc.pcs[p.id];
+      let mark = m.muted ? "🔇" : "";
+      if (p.id !== uid && !mark && (!pr || pr.pc.connectionState !== "connected")) mark = pr && pr.pc.connectionState === "failed" ? "⚠️" : "⏳";
+      return `<div class="cv" data-u="${esc(p.id)}" title="${esc(p.name)}">${picHTML(p)}${mark ? `<span class="mk">${mark}</span>` : ""}</div>`;
+    }).join("");
+    h += `<button class="ib${vc.muted ? "" : " on"}" id="muteBtn" title="माइक">${vc.muted ? "🔇" : "🎤"}</button>`;
+  }
+  h += '<button class="ib" id="rxBtn" title="रिएक्सन">😂</button>';
+  h += `<button class="ib" id="sndBtn" title="रिएक्सनको आवाज">${soundOn ? "🔔" : "🔕"}</button>`;
+  if (vc.on) h += '<button class="ib" id="leaveCall" title="कल छोड्नुहोस्">📞✖</button>';
+  row.innerHTML = h;
+  if (!vc.on && !$("vMsg").textContent) vMsg("ईयरफोन लगाउनुहोस् 🎧");
+  if ($("joinCall")) $("joinCall").onclick = joinCall;
+  if ($("muteBtn")) $("muteBtn").onclick = () => setMuted(!vc.muted);
+  if ($("leaveCall")) $("leaveCall").onclick = leaveCall;
+  $("rxBtn").onclick = () => $("reactPanel").classList.toggle("hidden");
+  $("sndBtn").onclick = () => {
+    soundOn = !soundOn;
+    try { localStorage.setItem("kmk_sound" + SUF, soundOn ? "1" : "0"); } catch (e) {}
+    renderDock();
+  };
+}
+setInterval(() => {
+  document.querySelectorAll("#callRow .cv").forEach(el => {
+    const u = el.dataset.u, mt = vc.meters[u];
+    el.classList.toggle("talk", !!mt && mt.level() > 0.02 && !(u === uid && vc.muted));
+  });
+}, 150);
+
+/* ----- reactions ----- */
+const REACTS = [
+  ["haha", "😂", "हाहा"], ["laugh", "🤣", "मरेँ हाँसेर"], ["rage", "😡", "रिस"], ["shy", "🙈", "लाज"],
+  ["shock", "😱", "अचम्म"], ["cry", "😭", "रुवाइ"], ["palm", "🤦", "हे भगवान"], ["clap", "👏", "ताली"],
+  ["love", "😍", "माया"], ["confused", "🥴", "के भो?"], ["savage", "🔥", "ज्वाला"], ["dead", "💀", "मरिसकेँ"],
+  ["boring", "😴", "बोरिङ"], ["oops", "🤭", "ओहो"], ["boo", "👎", "बू!"], ["drum", "🥁", "बा-डम-ट्स"]
+];
+$("reactPanel").innerHTML = REACTS.map(r => `<button class="rx" data-k="${r[0]}">${r[1]}<span>${r[2]}</span></button>`).join("");
+$("reactPanel").onclick = e => { const b = e.target.closest(".rx"); if (b) sendReact(b.dataset.k); };
+
+function sendReact(k) {
+  const t = Date.now();
+  if (t - lastRx < 700 || !curCode) return;
+  lastRx = t;
+  set(push(ref(db, `rooms/${curCode}/react`)), { u: uid, k, t: serverTimestamp() }).catch(() => {});
+}
+function startReactListener(code) {
+  if (unsubR) unsubR();
+  unsubR = onChildAdded(query(ref(db, `rooms/${code}/react`), limitToLast(10)), s => {
+    const v = s.val();
+    if (!v || typeof v.t !== "number" || nowMs() - v.t > 6000) return;
+    showFloat(v.u, v.k); playSound(v.k);
+  });
+}
+function showFloat(u, k) {
+  const r = REACTS.find(x => x[0] === k); if (!r) return;
+  const L = $("floatLayer"); while (L.children.length > 12) L.removeChild(L.firstChild);
+  const pl = lastRoom && lastRoom.players && lastRoom.players[u];
+  const d = document.createElement("div"); d.className = "fl";
+  d.style.left = (8 + Math.random() * 70) + "%";
+  d.innerHTML = `<div class="e">${r[1]}</div><div class="n"></div>`;
+  d.querySelector(".n").textContent = pl ? pl.name : "";
+  L.appendChild(d); setTimeout(() => d.remove(), 2500);
+}
+
+/* ----- sounds (generated in the browser, no files) ----- */
+function sfxCtx() {
+  if (!sfx) { try { sfx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (sfx && sfx.state === "suspended") sfx.resume().catch(() => {});
+  return sfx;
+}
+document.addEventListener("pointerdown", () => sfxCtx(), { once: true });
+const SND = {
+  haha: T => { for (let i = 0; i < 4; i++) T(300 - i * 18, i * 0.16, 0.11, "sawtooth", 0.5, 260 - i * 18, 1000); },
+  laugh: T => { for (let i = 0; i < 8; i++) T(380 + i * 12, i * 0.1, 0.07, "sawtooth", 0.5, 330 + i * 12, 1500); T(520, 0.85, 0.25, "sine", 0.3, 380); },
+  rage: (T, N) => { T(90, 0, 0.7, "sawtooth", 0.6, 160, 500); N(0, 0.5, 0.4, 400, 0.7); T(70, 0.1, 0.6, "square", 0.25, 140, 300); },
+  shy: T => { T(700, 0, 0.18, "sine", 0.35, 880); T(880, 0.18, 0.25, "sine", 0.3, 700); },
+  shock: (T, N) => { T(300, 0, 0.35, "sawtooth", 0.4, 1400, 2500); N(0.3, 0.25, 0.4, 3000, 0.5); },
+  cry: T => { T(650, 0, 0.45, "sine", 0.4, 420); T(600, 0.5, 0.5, "sine", 0.4, 330); T(300, 0.1, 0.9, "sine", 0.12, 280); },
+  palm: (T, N) => { N(0, 0.12, 0.9, 1200, 0.8); T(140, 0, 0.18, "sine", 0.8, 70); },
+  clap: (T, N) => { [0, 0.09, 0.18, 0.3, 0.4, 0.5, 0.62].forEach(s => N(s, 0.07, 0.8, 1900, 0.9)); },
+  love: T => { [523, 659, 784, 1047].forEach((f, i) => T(f, i * 0.09, 0.28, "triangle", 0.4)); },
+  confused: T => { T(400, 0, 0.25, "sine", 0.4, 560); T(560, 0.25, 0.25, "sine", 0.4, 380); T(380, 0.5, 0.3, "sine", 0.4, 520); },
+  savage: T => { T(440, 0, 0.35, "sawtooth", 0.35, 415, 1800); T(554, 0, 0.35, "sawtooth", 0.3, 520, 1800); T(659, 0, 0.35, "sawtooth", 0.3, 620, 1800); },
+  dead: T => { T(311, 0, 0.3, "sawtooth", 0.4, 305, 900); T(294, 0.33, 0.3, "sawtooth", 0.4, 288, 900); T(277, 0.66, 0.3, "sawtooth", 0.4, 270, 900); T(262, 1.0, 0.8, "sawtooth", 0.4, 200, 900); },
+  boring: T => { T(520, 0, 0.8, "sine", 0.4, 110); },
+  oops: T => { T(220, 0, 0.12, "square", 0.25, 700, 2000); T(700, 0.12, 0.25, "sine", 0.35, 260); },
+  boo: T => { T(160, 0, 1, "sawtooth", 0.5, 120, 420); T(80, 0, 1, "sine", 0.35, 70); },
+  drum: (T, N) => { T(180, 0, 0.1, "sine", 0.9, 90); T(140, 0.18, 0.12, "sine", 0.9, 70); N(0.4, 0.5, 0.5, 7000, 0.5); }
+};
+function playSound(kind, c0) {
+  if (!soundOn || !SND[kind]) return;
+  (window.__sounds = window.__sounds || []).push(kind);
+  const c = c0 || sfxCtx(); if (!c || (!c0 && c.state !== "running")) return;
+  const t0 = c.currentTime + 0.02, out = c.createGain();
+  out.gain.value = 0.35; out.connect(c.destination);
+  const T = (f, s, d, type, v, f2, lp) => {
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t0 + s);
+    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + s + d);
+    g.gain.setValueAtTime(0.0001, t0 + s);
+    g.gain.exponentialRampToValueAtTime(v, t0 + s + Math.min(0.02, d / 3));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + s + d);
+    let node = o;
+    if (lp) { const flt = c.createBiquadFilter(); flt.type = "lowpass"; flt.frequency.value = lp; o.connect(flt); node = flt; }
+    node.connect(g); g.connect(out); o.start(t0 + s); o.stop(t0 + s + d + 0.05);
+  };
+  const N = (s, d, v, bp, q) => {
+    const len = Math.max(1, Math.floor(c.sampleRate * d)), buf = c.createBuffer(1, len, c.sampleRate), data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = c.createBufferSource(), flt = c.createBiquadFilter(), g = c.createGain();
+    src.buffer = buf; flt.type = "bandpass"; flt.frequency.value = bp; flt.Q.value = q; g.gain.value = v;
+    src.connect(flt); flt.connect(g); g.connect(out); src.start(t0 + s);
+  };
+  try { SND[kind](T, N); } catch (e) {}
+}
+
+window.__playSound = playSound;
 
 /* ---------- Start ---------- */
 (async () => {

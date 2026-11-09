@@ -44,6 +44,24 @@
   .tag { font-size:.7rem; color:#fff; background:var(--accent); border-radius:8px; display:inline-block; padding:0 6px; margin-top:2px; }
   .row { display:flex; align-items:center; gap:10px; justify-content:center; margin-top:10px; }
   .row input { width:90px; text-align:center; }
+  .small { font-size:.85rem; opacity:.7; }
+  .holder { display:flex; align-items:center; gap:10px; justify-content:center; margin-top:6px; }
+  .mini2 { width:48px; height:48px; margin:0 auto 2px; flex:none; }
+  .holder .mini2 { margin:0; }
+  .mini2 svg, .mini2 img { width:100%; height:100%; border-radius:50%; object-fit:cover; display:block; }
+  .paper { background:#fffdf3; border:1px solid var(--line); border-radius:8px; padding:6px 14px; margin:14px 0 10px; text-align:left; box-shadow:inset 4px 0 0 #e9b7a8; }
+  .pline { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px dashed var(--line); }
+  .pline:last-child { border-bottom:none; }
+  .pline .lbl { font-size:1.25rem; font-weight:700; width:36px; }
+  .pline > :first-child { flex:1; min-width:0; }
+  .folded { height:36px; border-radius:6px; background:repeating-linear-gradient(45deg,#e6d9b8,#e6d9b8 6px,#f2e8cf 6px,#f2e8cf 12px); }
+  .empty { height:36px; }
+  .pline input { width:100%; padding:8px 10px; font-size:1.15rem; border:2px solid var(--accent); border-radius:8px; font-family:inherit; color:var(--ink); background:#fff; }
+  .prompt { font-weight:600; margin:4px 0 2px; }
+  .avrow { display:flex; justify-content:center; gap:12px; flex-wrap:wrap; margin:12px 0; }
+  .avitem { text-align:center; width:70px; font-size:.78rem; word-break:break-word; }
+  .sentence { background:#fffdf3; border:1px solid var(--line); border-radius:10px; padding:14px; font-size:1.25rem; line-height:1.9; margin-top:8px; }
+  .sentence b { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -95,6 +113,14 @@
       <button class="btn primary" id="start">सुरु गर्नुहोस्</button>
       <div id="lobbyMsg" class="err"></div>
       <button class="btn ghost" id="leave">रुम छोड्नुहोस्</button>
+    </div>
+  </div>
+
+  <!-- GAME -->
+  <div id="vGame" class="hidden">
+    <div class="card center">
+      <div id="gHead" style="font-weight:700;font-size:1.1rem"></div>
+      <div id="gBody"></div>
     </div>
   </div>
 </div>
@@ -155,14 +181,18 @@ function avatarSVG(a) {
     <circle cx="42" cy="48" r="2.4" fill="#222"/><circle cx="58" cy="48" r="2.4" fill="#222"/>
     <path d="M42 58 Q50 65 58 58" stroke="#222" stroke-width="2" fill="none" stroke-linecap="round"/>${extra}</svg>`;
 }
+const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
 function picHTML(p) {
-  if (p.photo && String(p.photo).startsWith("data:image/")) return `<img src="${p.photo}" alt="">`;
-  return avatarSVG(AV[p.avatar] || AV[0]);
+  if (p && p.photo && PHOTO_OK.test(p.photo)) return `<img src="${p.photo}" alt="">`;
+  return avatarSVG(AV[p && p.avatar] || AV[0]);
 }
+const norm = x => { const o = {}; if (x) Object.keys(x).forEach(k => { if (x[k] !== null && x[k] !== undefined) o[k] = x[k]; }); return o; };
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const sortedPlayers = room => Object.entries(room.players || {}).map(([id, p]) => ({ id, ...p })).sort((a, b) => Number(a.seat) - Number(b.seat));
 
 /* ---------- Views ---------- */
 function show(id) {
-  ["vProfile", "vHome", "vLobby", "loading"].forEach(v => $(v).classList.add("hidden"));
+  ["vProfile", "vHome", "vLobby", "vGame", "loading"].forEach(v => $(v).classList.add("hidden"));
   if (id) $(id).classList.remove("hidden");
 }
 
@@ -277,24 +307,31 @@ $("join").onclick = async () => {
 
 /* ---------- Lobby ---------- */
 let unsub = null, curCode = null;
+let viewKey = null, lastRoom = null, gameErr = "", draftWord = "", busy = false;
 function enterLobby(code) {
-  curCode = code;
+  curCode = code; viewKey = null; gameErr = ""; draftWord = ""; lastRoom = null;
   try { localStorage.setItem(RK, code); } catch (e) {}
   $("roomCode").textContent = code; $("lobbyMsg").textContent = "";
-  show("vLobby");
+  show("loading");
   if (unsub) unsub();
   unsub = onValue(ref(db, "rooms/" + code),
-    s => { const v = s.val(); if (!v) { goHome(); return; } renderLobby(v); },
+    s => {
+      const v = s.val();
+      if (!v || !v.players || !v.players[uid]) { goHome(); return; }
+      lastRoom = v;
+      if ((v.meta || {}).status === "lobby") { viewKey = null; show("vLobby"); renderLobby(v); }
+      else renderGame(v);
+    },
     () => goHome());
 }
 function goHome() {
-  if (unsub) unsub(); unsub = null; curCode = null;
+  if (unsub) unsub(); unsub = null; curCode = null; lastRoom = null; viewKey = null;
   try { localStorage.removeItem(RK); } catch (e) {}
   renderHome();
 }
 function renderLobby(room) {
   const meta = room.meta || {};
-  const pl = Object.entries(room.players || {}).map(([id, p]) => ({ id, ...p })).sort((a, b) => Number(a.seat) - Number(b.seat));
+  const pl = sortedPlayers(room);
   const me = pl.findIndex(p => p.id === uid);
   if (me < 0) { goHome(); return; }
   const n = pl.length, isHost = meta.host === uid;
@@ -325,7 +362,16 @@ $("copy").onclick = async () => {
   catch (e) { $("copy").textContent = "कोड हातले लेख्नुहोस्"; }
   setTimeout(() => { $("copy").textContent = "कोड कपी गर्नुहोस्"; }, 1500);
 };
-$("start").onclick = () => { $("lobbyMsg").textContent = "खेल सुरु हुने भाग अर्को चरणमा बनाउँछौं।"; };
+$("start").onclick = async () => {
+  const pl = lastRoom ? sortedPlayers(lastRoom) : [], n = pl.length;
+  if (n < 3 || n > 4) return;
+  $("start").disabled = true; $("lobbyMsg").textContent = "";
+  // plan[कागज][खाली ठाउँ] = लेख्ने खेलाडीको id. कागज p को b-औं ठाउँ घडीको दिशामा b सिट पछिको खेलाडीले लेख्छ।
+  const plan = {};
+  pl.forEach((owner, i) => { const row = {}; for (let b = 0; b < 4; b++) row[b] = pl[(i + b) % n].id; plan[owner.seat] = row; });
+  try { await update(ref(db), { [`rooms/${curCode}/plan`]: plan, [`rooms/${curCode}/meta/status`]: "writing" }); }
+  catch (e) { $("lobbyMsg").textContent = "सुरु गर्न सकिएन। (Firebase rules पेस्ट गर्नुभयो?)"; $("start").disabled = false; }
+};
 $("leave").onclick = async () => {
   const code = curCode;
   try {
@@ -336,6 +382,98 @@ $("leave").onclick = async () => {
   } catch (e) {}
   goHome();
 };
+
+/* ---------- Game ---------- */
+const LBL = ["को", "मा", "को", "छ"];
+const KIND = ["नाम", "अंग", "नाम", "अंग"];
+const PROMPT = ["कुनै व्यक्तिको नाम लेख्नुहोस्", "शरीरको कुनै अंग लेख्नुहोस्", "कुनै व्यक्तिको नाम लेख्नुहोस्", "शरीरको कुनै अंग लेख्नुहोस्"];
+
+function gameState(room) {
+  const plan = norm(room.plan), passed = room.passed || {};
+  const papers = Object.keys(plan).map(Number).sort((a, b) => a - b);
+  const planOf = (p, b) => { const x = plan[p]; return x ? x[b] : undefined; };
+  const members = papers.map(p => planOf(p, 0));
+  const has = (b, u) => { const x = passed[b]; return !!x && x[u] !== undefined && x[u] !== null; };
+  let round = 4;
+  for (let b = 0; b < 4; b++) { if (!members.every(u => has(b, u))) { round = b; break; } }
+  return { papers, planOf, members, has, round };
+}
+
+function renderGame(room) {
+  const S = gameState(room);
+  show("vGame");
+  if (!S.members.includes(uid)) { viewKey = null; $("gHead").textContent = ""; $("gBody").textContent = "खेल सुरु भइसकेको छ।"; return; }
+  if (S.round >= 4) { renderFinished(room); return; }
+  const r = S.round;
+  $("gHead").textContent = `राउन्ड ${r + 1} / 4`;
+  if (S.has(r, uid)) renderWaiting(room, S, r); else renderWriting(room, S, r);
+}
+
+function renderWriting(room, S, r) {
+  const p = S.papers.find(q => S.planOf(q, r) === uid);
+  const key = `w:${r}:${p}`;
+  if (viewKey === key) return;
+  viewKey = key;
+  const owner = (room.players || {})[S.planOf(p, 0)] || { name: "?", avatar: 0 };
+  let lines = "";
+  for (let b = 0; b < 4; b++) {
+    let mid;
+    if (b < r) mid = '<div class="folded"></div>';
+    else if (b === r) mid = `<input id="wordIn" type="text" maxlength="20" autocomplete="off" placeholder="${KIND[b]}" value="${esc(draftWord)}">`;
+    else mid = '<div class="empty"></div>';
+    lines += `<div class="pline">${mid}<span class="lbl">${LBL[b]}</span></div>`;
+  }
+  $("gBody").innerHTML = `<div class="holder"><div class="mini2">${picHTML(owner)}</div><div><span class="small">कागज:</span> <b>${esc(owner.name)}</b></div></div>
+    <div class="paper">${lines}</div>
+    <div class="prompt">${PROMPT[r]}</div>
+    <button class="btn primary" id="pass">पास गर्नुहोस्</button>
+    <div id="gErr" class="err">${esc(gameErr)}</div>`;
+  $("pass").onclick = () => submitWord(r, p);
+  $("wordIn").onkeydown = e => { if (e.key === "Enter" && !e.isComposing) submitWord(r, p); };
+  setTimeout(() => { const i = $("wordIn"); if (i) i.focus(); }, 50);
+}
+
+async function submitWord(r, p) {
+  if (busy) return;
+  const w = $("wordIn").value.trim();
+  if (!w) { $("gErr").textContent = "कृपया शब्द लेख्नुहोस्।"; return; }
+  busy = true; gameErr = ""; draftWord = w; $("pass").disabled = true; $("gErr").textContent = "";
+  try {
+    try { await set(ref(db, `words/${curCode}/${p}/${r}`), w); } catch (e) { /* पहिले नै लेखिएको हुन सक्छ */ }
+    await set(ref(db, `rooms/${curCode}/passed/${r}/${uid}`), String(p));
+    draftWord = "";
+  } catch (e) {
+    gameErr = "पास गर्न सकिएन। (Firebase rules पेस्ट गर्नुभयो?)";
+    viewKey = null; if (lastRoom) renderGame(lastRoom);
+  }
+  busy = false;
+}
+
+function renderWaiting(room, S, r) {
+  viewKey = "wait";
+  const pm = room.players || {};
+  const p = S.papers.find(q => S.planOf(q, r) === uid);
+  const next = S.planOf(p, r + 1);
+  const done = S.members.filter(u => S.has(r, u)).length;
+  const items = S.members.map(u => { const x = pm[u] || { name: "?", avatar: 0 }; return `<div class="avitem"><div class="mini2">${picHTML(x)}</div><div>${S.has(r, u) ? "✅" : "⏳"}</div><div>${esc(x.name)}</div></div>`; }).join("");
+  const sent = next && pm[next] ? `कागज <b>${esc(pm[next].name)}</b> लाई पठाइयो` : "कागज मालिककहाँ फर्किँदैछ";
+  $("gBody").innerHTML = `<p>✅ तपाईंले पास गर्नुभयो</p><p>${sent}</p><div class="avrow">${items}</div><p>${done} / ${S.members.length} जनाले पास गरे</p>`;
+}
+
+function renderFinished(room) {
+  $("gHead").textContent = "सबै कागज पूरा भए 🎉";
+  if (viewKey === "done") return;
+  viewKey = "done";
+  $("gBody").innerHTML = `<p>सबैले आ-आफ्नो शब्द लेखिसके।</p><div class="small">जाँचका लागि: तपाईंको कागज (अर्को चरणमा यो एक-एक गरी सबैलाई खोलिनेछ)</div><div id="mine" class="sentence">...</div>`;
+  loadMine(room);
+}
+async function loadMine(room) {
+  const me = (room.players || {})[uid], box = $("mine");
+  try {
+    const v = norm((await get(ref(db, `words/${curCode}/${me.seat}`))).val());
+    box.innerHTML = [0, 1, 2, 3].map(b => `<b>${esc(v[b] === undefined ? "?" : v[b])}</b> ${LBL[b]}`).join(" ");
+  } catch (e) { box.textContent = "कागज पढ्न सकिएन।"; }
+}
 
 /* ---------- Start ---------- */
 (async () => {
